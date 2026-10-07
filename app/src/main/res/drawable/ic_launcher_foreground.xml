@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A spectrum running into a wall: ink bars, then the red cut. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#111111" android:pathData="M30,40 h8 v38 h-8 z" />
+    <path android:fillColor="#111111" android:pathData="M41,46 h8 v32 h-8 z" />
+    <path android:fillColor="#111111" android:pathData="M52,52 h8 v26 h-8 z" />
+    <path
+        android:fillColor="#D62E1F"
+        android:strokeColor="#111111"
+        android:strokeWidth="2.5"
+        android:pathData="M64,30 h6 v48 h-6 z" />
+    <path
+        android:fillColor="#F5C518"
+        android:strokeColor="#111111"
+        android:strokeWidth="2.5"
+        android:pathData="M74,72 h6 v6 h-6 z" />
+</vector>

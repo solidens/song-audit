@@ -1,0 +1,19 @@
+SONG AUDIT
+Copyright (C) 2026 solodkovskiy
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See LICENSE for the full text.
+
+
+THIRD-PARTY COMPONENTS
+======================
+
+Jetpack Compose, AndroidX
+  Google -- Apache-2.0.
+
+The FLAC decoder, the tag readers, the spectrum and DR analysis and the
+fingerprint are written for this app. The fingerprint follows the method in
+Haitsma and Kalker, "A Highly Robust Audio Fingerprinting System", ISMIR 2002;
+the dynamic range follows the TT DR Offline Meter's published method.

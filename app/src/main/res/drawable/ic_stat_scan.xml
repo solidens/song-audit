@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon: the launcher's spectrum and wall, as a silhouette. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3,8 h3 v13 h-3 z M8,11 h3 v10 h-3 z M13,14 h3 v7 h-3 z M18,3 h3 v18 h-3 z" />
+</vector>

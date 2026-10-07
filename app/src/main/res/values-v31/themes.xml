@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launch screen is paper too, so the app does not open with a white flash. -->
+    <style name="Theme.SongAudit" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/ic_launcher_background</item>
+        <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="android:statusBarColor">#F2F0E9</item>
+        <item name="android:navigationBarColor">#F2F0E9</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
