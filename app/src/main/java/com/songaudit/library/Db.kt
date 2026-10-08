@@ -14,7 +14,7 @@ import java.nio.ByteOrder
  * listening found; the spectrum and fingerprint blobs ride along but are only
  * read when a screen or the matcher asks for them.
  */
-class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audit.db", null, 1) {
+class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audit.db", null, 2) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.enableWriteAheadLogging()
@@ -41,7 +41,8 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
                 issues INTEGER NOT NULL DEFAULT 0,
                 spectrum BLOB, fingerprint BLOB,
                 hash TEXT,
-                quarantined INTEGER NOT NULL DEFAULT 0
+                quarantined INTEGER NOT NULL DEFAULT 0,
+                accepted INTEGER NOT NULL DEFAULT 0
             )""",
         )
         db.execSQL("CREATE INDEX tracks_folder ON tracks(folder)")
@@ -54,12 +55,19 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
                 original TEXT NOT NULL,
                 moved TEXT NOT NULL,
                 size INTEGER NOT NULL,
-                label TEXT
+                label TEXT,
+                kind INTEGER NOT NULL DEFAULT 0
             )""",
         )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // 0.2: findings the person keeps, and quarantine entries that are not plain moves.
+            db.execSQL("ALTER TABLE tracks ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE quarantine ADD COLUMN kind INTEGER NOT NULL DEFAULT 0")
+        }
+    }
 
     private val db: SQLiteDatabase get() = writableDatabase
 
@@ -116,6 +124,48 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
             put("deep_version", 0)
         }
         db.insertWithOnConflict("tracks", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /**
+     * New tags on a file whose audio is unchanged: what the header says is
+     * replaced, what listening found stays.
+     */
+    fun putHeader(id: Long, size: Long, modified: Long, p: Probed) {
+        val t = p.tags
+        val biggest = p.pictures.maxByOrNull { it.bytes }
+        val v = ContentValues().apply {
+            put("size", size)
+            put("modified", modified)
+            put("title", t.title)
+            put("artist", t.artist)
+            put("album", t.album)
+            put("album_artist", t.albumArtist)
+            put("track", t.track)
+            put("track_total", t.trackTotal)
+            put("disc", t.disc)
+            put("disc_total", t.discTotal)
+            put("date", t.date)
+            put("genre", t.genre)
+            put("compilation", if (t.compilation) 1 else 0)
+            put("pictures", p.pictures.size)
+            put("picture_bytes", biggest?.bytes ?: 0)
+            put("picture_w", biggest?.width ?: 0)
+            put("picture_h", biggest?.height ?: 0)
+            putNull("hash")
+        }
+        db.update("tracks", v, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun idOf(path: String): Long? =
+        db.rawQuery("SELECT id FROM tracks WHERE path = ?", arrayOf(path)).use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+
+    /** Marks findings as kept, or with [keep] false, opens them again. */
+    fun accept(ids: Collection<Long>, mask: Int, keep: Boolean) = db.inTransaction {
+        for (chunk in ids.chunked(500)) {
+            val list = chunk.joinToString(",")
+            if (keep) execSQL("UPDATE tracks SET accepted = accepted | $mask WHERE id IN ($list)")
+            else execSQL("UPDATE tracks SET accepted = accepted & ~$mask WHERE id IN ($list)")
+        }
     }
 
     fun delete(ids: Collection<Long>) {
@@ -242,7 +292,7 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
             deepVersion = c.getInt(29), deepError = s(30), frameErrors = c.getInt(31),
             md5Match = if (c.isNull(32)) -1 else c.getInt(32), truncated = c.getInt(33) == 1, decodedMd5 = s(34),
             effectiveBits = c.getInt(35), dr = f(36), peakDb = f(37), cutoffHz = c.getInt(38), cliffDb = f(39),
-            ultrasonicDb = f(40), issues = c.getInt(41),
+            ultrasonicDb = f(40), issues = c.getInt(41), accepted = c.getInt(42),
         )
     }
 
@@ -269,22 +319,61 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
 
     // -- Quarantine -------------------------------------------------------
 
-    class Moved(val id: Long, val batch: Long, val original: String, val moved: String, val size: Long, val label: String?)
+    class Moved(
+        val id: Long,
+        val batch: Long,
+        val original: String,
+        val moved: String,
+        val size: Long,
+        val label: String?,
+        val kind: Int,
+    ) {
+        companion object {
+            /** The file itself, moved aside. */
+            const val SET_ASIDE = 0
 
-    fun quarantine(batch: Long, original: String, moved: String, size: Long, label: String) = db.inTransaction {
-        val v = ContentValues().apply {
-            put("batch", batch)
-            put("original", original)
-            put("moved", moved)
-            put("size", size)
-            put("label", label)
+            /** A file's tags as they were before a fix; [moved] is the undo file. */
+            const val TAGS = 1
+
+            /** The original of a file that was replaced by a smaller one at the same path. */
+            const val REPLACED = 2
+
+            /** A file a fix created, cover.jpg say: putting back the fix removes it, emptying keeps it. */
+            const val ADDED = 3
         }
-        insert("quarantine", null, v)
+    }
+
+    fun quarantine(batch: Long, original: String, moved: String, size: Long, label: String, kind: Int = Moved.SET_ASIDE) = db.inTransaction {
+        insert("quarantine", null, entry(batch, original, moved, size, label, kind))
         relocate(this, original, moved, quarantined = true)
+    }
+
+    /** An undo file for a tag fix, or a file a fix added: the track itself stays where it is. */
+    fun backup(batch: Long, original: String, undo: String, size: Long, label: String, kind: Int = Moved.TAGS) {
+        db.insert("quarantine", null, entry(batch, original, undo, size, label, kind))
+    }
+
+    private fun entry(batch: Long, original: String, moved: String, size: Long, label: String, kind: Int) = ContentValues().apply {
+        put("batch", batch)
+        put("original", original)
+        put("moved", moved)
+        put("size", size)
+        put("label", label)
+        put("kind", kind)
     }
 
     fun restored(entry: Moved) = db.inTransaction {
         delete("quarantine", "id = ?", arrayOf(entry.id.toString()))
+        if (entry.kind == Moved.TAGS || entry.kind == Moved.ADDED) return@inTransaction
+        if (entry.kind == Moved.REPLACED) {
+            // The smaller file that stood in its place is gone.
+            val ids = ArrayList<Long>()
+            rawQuery("SELECT id FROM tracks WHERE path = ?", arrayOf(entry.original)).use { c -> while (c.moveToNext()) ids += c.getLong(0) }
+            for (id in ids) {
+                execSQL("DELETE FROM tracks WHERE id = $id")
+                execSQL("DELETE FROM edges WHERE a = $id OR b = $id")
+            }
+        }
         relocate(this, entry.moved, entry.original, quarantined = false)
     }
 
@@ -299,8 +388,8 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
 
     fun moved(): List<Moved> {
         val out = ArrayList<Moved>()
-        db.rawQuery("SELECT id, batch, original, moved, size, label FROM quarantine ORDER BY batch DESC, id", null).use { c ->
-            while (c.moveToNext()) out += Moved(c.getLong(0), c.getLong(1), c.getString(2), c.getString(3), c.getLong(4), c.getString(5))
+        db.rawQuery("SELECT id, batch, original, moved, size, label, kind FROM quarantine ORDER BY batch DESC, id", null).use { c ->
+            while (c.moveToNext()) out += Moved(c.getLong(0), c.getLong(1), c.getString(2), c.getString(3), c.getLong(4), c.getString(5), c.getInt(6))
         }
         return out
     }
@@ -336,7 +425,7 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, "audi
             "duration, bitrate, title, artist, album, album_artist, track, track_total, disc, disc_total, date, genre, " +
             "compilation, pictures, picture_bytes, picture_w, picture_h, audio_md5, probe_error, deep_version, " +
             "deep_error, frame_errors, md5_match, truncated, decoded_md5, effective_bits, dr, peak, cutoff, cliff, " +
-            "ultrasonic, issues"
+            "ultrasonic, issues, accepted"
 
         @Volatile
         private var instance: Db? = null

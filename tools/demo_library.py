@@ -133,6 +133,22 @@ def main():
     cover(heavy, None, size=3000, heavy=True)
     album("Lune/Big Sky", "Lune", "Big Sky", [(songs[12], names[12]), (songs[13], names[13])], art=heavy, embed=True)
 
+    # Ripped without a tag lookup: MP3s that only know their file names.
+    d = os.path.join(out, "Sela", "Loose Ends")
+    os.makedirs(d)
+    for i, s in enumerate((songs[2], songs[6]), 1):
+        ff("-i", s, "-b:a", "192k", "-map_metadata", "-1", "-id3v2_version", "3",
+           os.path.join(d, f"{i:02d} - {['Second Floor', 'Arrow'][i - 1]}.mp3"))
+    shutil.copy(red, os.path.join(d, "folder.jpg"))
+
+    # Two discs in two folders, the cover one folder up where neither disc's player view sees it.
+    root = os.path.join(out, "Halden", "Two Rivers")
+    album("Halden/Two Rivers/CD1", "Halden", "Two Rivers", [(songs[0], names[0])], art=None)
+    album("Halden/Two Rivers/CD2", "Halden", "Two Rivers", [(songs[1], names[1])], art=None)
+    blue = os.path.join(tmp, "blue.jpg")
+    cover(blue, "0x0F4CD1")
+    shutil.copy(blue, os.path.join(root, "cover.jpg"))
+
     total = 0
     for root, _, files in os.walk(out):
         for f in files:

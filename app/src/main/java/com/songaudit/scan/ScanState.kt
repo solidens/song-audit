@@ -11,6 +11,8 @@ enum class Phase(val label: String) {
     HASHING("Comparing copies"),
     MATCHING("Matching duplicates"),
     LISTENING("Listening"),
+    FIXING("Fixing tags and covers"),
+    SHRINKING("Shrinking to true size"),
 }
 
 /** Where a scan is. One per process; the service writes it, the screens read it. */
@@ -71,4 +73,20 @@ object ScanState {
     }
 
     fun changed() = state.update { it.copy(version = it.version + 1) }
+
+    /** A batch of fixes, which the service runs in place of a scan. */
+    fun begin(phase: Phase, total: Int) = state.update { Progress(running = true, phase = phase, total = total, version = it.version + 1) }
+
+    private val said = MutableStateFlow<String?>(null)
+
+    /** What the last batch of fixes came to, for the screens to show once. */
+    val notice: StateFlow<String?> = said
+
+    fun say(text: String) {
+        said.value = text
+    }
+
+    fun heard() {
+        said.value = null
+    }
 }

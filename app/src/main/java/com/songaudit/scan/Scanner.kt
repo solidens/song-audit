@@ -218,38 +218,6 @@ class Scanner(private val context: Context, private val charging: () -> Boolean)
         }
     }
 
-    private fun row(t: Track, r: DeepResult): Db.DeepRow {
-        val a = r.analysis
-        // DSD and friends are not decoded on Android: no verdict either way, and not damage.
-        val skipped = r.error == NOT_DECODED
-        val issues = if (skipped) emptySet() else Verdict.issues(
-            lossless = t.lossless,
-            sampleRate = t.sampleRate,
-            bits = t.bits,
-            bitrate = t.bitrate,
-            damaged = r.damaged,
-            cutoffHz = a?.cutoffHz ?: 0,
-            ultrasonicDropDb = a?.ultrasonicDropDb ?: 0f,
-            effectiveBits = a?.effectiveBits ?: 0,
-        )
-        return Db.DeepRow(
-            deepError = r.error,
-            frameErrors = r.frameErrors,
-            md5Match = r.md5Match,
-            truncated = r.truncated,
-            decodedMd5 = a?.md5?.let(Db::hex)?.takeIf { t.format != "FLAC" || r.md5Match != 1 },
-            effectiveBits = a?.effectiveBits ?: 0,
-            dr = a?.dr ?: Float.NaN,
-            peakDb = a?.peakDb ?: Float.NaN,
-            cutoffHz = a?.cutoffHz ?: 0,
-            cliffDb = a?.cliffDb ?: 0f,
-            ultrasonicDb = a?.ultrasonicDropDb ?: 0f,
-            issues = com.songaudit.analysis.Issue.mask(issues),
-            spectrum = a?.spectrum,
-            fingerprint = a?.fingerprint?.takeIf { it.isNotEmpty() },
-        )
-    }
-
     /** Runs [work] over [items] on [threads] background-priority workers. */
     private suspend fun <T> parallel(items: List<T>, threads: Int, work: suspend (T) -> Unit) = coroutineScope {
         val next = AtomicInteger()
@@ -276,5 +244,38 @@ class Scanner(private val context: Context, private val charging: () -> Boolean)
         private val IMAGES = setOf("jpg", "jpeg", "png", "webp", "bmp", "gif")
         private val COVER_NAMES = listOf("cover", "folder", "front", "album")
         private val OWN_PARSERS = setOf("flac", "mp3", "wav", "aif", "aiff", "aifc", "dsf", "dff", "ape", "wv")
+
+        /** What the database keeps of a listen, with the verdict worked out. */
+        fun row(t: Track, r: DeepResult): Db.DeepRow {
+            val a = r.analysis
+            // DSD and friends are not decoded on Android: no verdict either way, and not damage.
+            val skipped = r.error == NOT_DECODED
+            val issues = if (skipped) emptySet() else Verdict.issues(
+                lossless = t.lossless,
+                sampleRate = t.sampleRate,
+                bits = t.bits,
+                bitrate = t.bitrate,
+                damaged = r.damaged,
+                cutoffHz = a?.cutoffHz ?: 0,
+                ultrasonicDropDb = a?.ultrasonicDropDb ?: 0f,
+                effectiveBits = a?.effectiveBits ?: 0,
+            )
+            return Db.DeepRow(
+                deepError = r.error,
+                frameErrors = r.frameErrors,
+                md5Match = r.md5Match,
+                truncated = r.truncated,
+                decodedMd5 = a?.md5?.let(Db::hex)?.takeIf { t.format != "FLAC" || r.md5Match != 1 },
+                effectiveBits = a?.effectiveBits ?: 0,
+                dr = a?.dr ?: Float.NaN,
+                peakDb = a?.peakDb ?: Float.NaN,
+                cutoffHz = a?.cutoffHz ?: 0,
+                cliffDb = a?.cliffDb ?: 0f,
+                ultrasonicDb = a?.ultrasonicDropDb ?: 0f,
+                issues = com.songaudit.analysis.Issue.mask(issues),
+                spectrum = a?.spectrum,
+                fingerprint = a?.fingerprint?.takeIf { it.isNotEmpty() },
+            )
+        }
     }
 }

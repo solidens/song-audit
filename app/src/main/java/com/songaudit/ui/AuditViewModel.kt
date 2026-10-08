@@ -1,9 +1,15 @@
 package com.songaudit.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.songaudit.analysis.Issue
+import com.songaudit.fix.AlbumFix
+import com.songaudit.fix.Fixes
+import com.songaudit.fix.Job
+import com.songaudit.fix.Jobs
+import com.songaudit.fix.Shrink
 import com.songaudit.library.Album
 import com.songaudit.library.Copy
 import com.songaudit.library.Db
@@ -11,6 +17,7 @@ import com.songaudit.library.Doctor
 import com.songaudit.library.DupGroup
 import com.songaudit.library.Duplicates
 import com.songaudit.library.Finding
+import com.songaudit.library.Problem
 import com.songaudit.library.Quarantine
 import com.songaudit.library.Settings
 import com.songaudit.library.Storage
@@ -88,6 +95,15 @@ class AuditViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             progress.map { it.version }.distinctUntilChanged().collectLatest { reload() }
         }
+        // What a batch of fixes in the service came to.
+        viewModelScope.launch {
+            ScanState.notice.collect { text ->
+                if (text != null) {
+                    _notice.value = text
+                    ScanState.heard()
+                }
+            }
+        }
     }
 
     private suspend fun reload() {
@@ -147,6 +163,7 @@ class AuditViewModel(app: Application) : AndroidViewModel(app) {
     fun quarantine(groups: List<DupGroup>) {
         val picks = _keep.value
         val lib = _library.value ?: return
+        if (busy()) return
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 val keepers = groups.associateWith { kept(it, picks) }
@@ -161,9 +178,11 @@ class AuditViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun restore(entries: List<Db.Moved>) {
+        if (busy()) return
         viewModelScope.launch {
             val failed = withContext(Dispatchers.IO) { quarantine.restore(entries) }
-            _notice.value = if (failed.isEmpty()) "Put back ${entries.size}" else "${failed.size} could not be put back: the place is taken"
+            val undo = entries.all { it.kind != Db.Moved.SET_ASIDE }
+            _notice.value = if (failed.isEmpty()) (if (undo) "Undone" else "Put back ${entries.size}") else "${failed.size} could not be put back: the place is taken or the file has changed"
             ScanState.changed()
         }
     }
@@ -175,6 +194,77 @@ class AuditViewModel(app: Application) : AndroidViewModel(app) {
             _notice.value = "Quarantine emptied · ${Doctor.mb(entries.sumOf { it.size })} freed"
             ScanState.changed()
         }
+    }
+
+    // -- Damaged, and not what it says -------------------------------------------
+
+    /** Moves tracks into the quarantine: the whole folder when they are all of it. */
+    fun setAside(tracks: List<Track>) {
+        val lib = _library.value ?: return
+        if (busy()) return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                quarantine.move(tracks.groupBy { it.folder }.map { (folder, t) -> Copy(folder, t) }, lib.tracks)
+            }
+            _notice.value = buildString {
+                append("Moved ${outcome.moved} to quarantine · ${Doctor.mb(outcome.bytes)}")
+                if (outcome.failed.isNotEmpty()) append(" · ${outcome.failed.size} could not be moved")
+            }
+            ScanState.changed()
+        }
+    }
+
+    /** Takes [mask]'s findings on these tracks off the lists, or with [keep] false, puts them back on. */
+    fun keep(tracks: List<Track>, mask: Int, keep: Boolean = true) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { db.accept(tracks.map { it.id }, mask, keep) }
+            _notice.value = if (keep) "Kept as ${if (tracks.size == 1) "it is" else "they are"} · ${Doctor.count(tracks.size, "track")}"
+            else "Back on the list"
+            ScanState.changed()
+        }
+    }
+
+    fun shrink(tracks: List<Track>) {
+        if (busy()) return
+        Jobs.post(Job.Shrink(tracks.filter { Shrink.target(it) != null }))
+        ScanService.fix(getApplication())
+    }
+
+    // -- Tags and covers ------------------------------------------------------------
+
+    /** The fixes for these albums' findings, as they would be written; looks on disk for covers. */
+    suspend fun plan(folders: List<String>, problems: Set<Problem>, picked: Map<String, ByteArray>): List<AlbumFix> {
+        val lib = _library.value ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            folders.mapNotNull { folder ->
+                val album = lib.byFolder[folder] ?: return@mapNotNull null
+                val found = lib.findings.filter { it.album.folder == folder }.map { it.problem }.toSet()
+                val wanted = found intersect problems intersect Fixes.FIXABLE
+                if (wanted.isEmpty()) null else Fixes.plan(album, wanted, lib.albums, picked[folder])
+            }
+        }
+    }
+
+    fun fix(fixes: List<AlbumFix>) {
+        if (busy()) return
+        Jobs.post(Job.Retag(fixes.filter { it.tracks.isNotEmpty() }))
+        ScanService.fix(getApplication())
+    }
+
+    /** Reads an image the person picked. */
+    suspend fun read(uri: Uri): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Files are not changed under a running scan. */
+    private fun busy(): Boolean {
+        if (!progress.value.running) return false
+        _notice.value = "Wait for the scan to finish, or stop it"
+        return true
     }
 
     fun noticeShown() {

@@ -27,7 +27,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.remember
 import com.songaudit.analysis.Issue
+import com.songaudit.fix.Fixes
+import com.songaudit.fix.Shrink
+import com.songaudit.ui.components.Action
+import com.songaudit.ui.components.Actions
+import com.songaudit.ui.theme.BrutalButton
 import com.songaudit.library.Doctor
 import com.songaudit.library.Track
 import com.songaudit.ui.AuditViewModel
@@ -55,38 +63,117 @@ import kotlin.math.roundToInt
 @Composable
 fun AlbumsScreen(vm: AuditViewModel, damaged: Boolean, push: (Route) -> Unit, pop: () -> Unit) {
     val lib = vm.library.collectAsStateWithLifecycle().value ?: Library.EMPTY
-    var filter by rememberSaveable { mutableStateOf<Int?>(null) }
+    var chosen by rememberSaveable { mutableStateOf<Int?>(null) }
     val issues = if (damaged) listOf(Issue.DAMAGED) else FAKE_FILTERS
+    val all = Issue.mask(issues)
     val source = if (damaged) lib.damaged else lib.fakes
-    val shown = filter?.let { bit -> source.filter { a -> a.tracks.any { it.issues and bit != 0 } } } ?: source
+    // Findings the person kept: off the list, one tap away from going back on it.
+    val kept = lib.albums.filter { a -> a.tracks.any { it.issues and it.accepted and all != 0 } }
+    val counts = issues.associateWith { i -> source.count { a -> a.count(i) > 0 } }
+    // A filter whose last album was just dealt with falls back to all.
+    val filter = chosen?.takeIf { f -> if (f == KEPT) kept.isNotEmpty() else counts.any { (i, n) -> i.bit == f && n > 0 } }
+    val shown = when (filter) {
+        null -> source
+        KEPT -> kept
+        else -> source.filter { a -> a.tracks.any { it.open and filter != 0 } }
+    }
     val partial = lib.analysed < lib.tracks.size
+    val mask = if (filter == null || filter == KEPT) all else filter
+    val flagged = shown.flatMap { a ->
+        a.tracks.filter { t -> if (filter == KEPT) t.issues and t.accepted and mask != 0 else t.open and mask != 0 }
+    }
+    var sheet by rememberSaveable { mutableStateOf(false) }
 
     Page(
         title = if (damaged) "Damaged" else "Not what it says",
-        subtitle = "${n(source.size)} albums" + if (partial) " · ${n(lib.analysed)} of ${n(lib.tracks.size)} tracks listened" else "",
+        subtitle = Doctor.count(source.size, "album") + if (partial) " · ${n(lib.analysed)} of ${n(lib.tracks.size)} tracks listened" else "",
         onBack = pop,
+        bottom = if (flagged.isEmpty()) null else {
+            {
+                BrutalButton(
+                    "${Doctor.count(flagged.size, "track")} · what to do",
+                    onClick = { sheet = true },
+                    fill = if (damaged) Grid.Red else Grid.Yellow,
+                    contentColor = if (damaged) Grid.Paper else Grid.Ink,
+                )
+            }
+        },
     ) {
-        if (!damaged) {
-            val counts = FAKE_FILTERS.associateWith { i -> source.count { a -> a.count(i) > 0 } }
-            Chips(
-                listOf<Pair<Int?, String>>(null to "All") +
-                    FAKE_FILTERS.filter { counts.getValue(it) > 0 }.map { it.bit to "${Look.label(it)} ${counts.getValue(it)}" },
-                filter,
-            ) { filter = it }
-        }
+        val chips = listOf<Pair<Int?, String>>(null to "All") +
+            (if (damaged) emptyList() else issues.filter { counts.getValue(it) > 0 }.map { it.bit to "${Look.label(it)} ${counts.getValue(it)}" }) +
+            (if (kept.isEmpty()) emptyList() else listOf(KEPT to "Kept ${kept.size}"))
+        if (chips.size > 1) Chips(chips, filter) { chosen = it }
         if (shown.isEmpty()) {
             Empty(
                 "Nothing here",
-                if (lib.analysed == 0) "These are found by listening. Run a scan and leave it going." else "Every track listened to so far is what it says.",
+                when {
+                    lib.analysed == 0 -> "These are found by listening. Run a scan and leave it going."
+                    damaged -> "Every track listened to so far plays as written."
+                    else -> "Every track listened to so far is what it says."
+                },
             )
         } else {
             LazyColumn(contentPadding = PaddingValues(vertical = GridTokens.Gap)) {
                 items(shown, key = { it.folder }) { album ->
-                    AlbumRow(album, badgesFor(album, issues)) { push(Route.Album(album.folder)) }
+                    AlbumRow(album, badgesFor(album, issues, kept = filter == KEPT)) { push(Route.Album(album.folder)) }
                 }
             }
         }
     }
+
+    if (sheet) {
+        val maybe = flagged.count { it.flags(Issue.MAYBE_LOSSY) }
+        Actions(
+            title = Doctor.count(flagged.size, "track") + " · " + Doctor.mb(flagged.sumOf { it.size }),
+            text = if (maybe > 0) "${Doctor.count(maybe, "track")} only maybe lossy: worth a listen before deciding." else null,
+            actions = trackActions(vm, flagged, mask),
+            onDismiss = { sheet = false },
+        )
+    }
+}
+
+/**
+ * What can be done with tracks flagged for [mask]: shrink those that are
+ * bigger than they are, set them aside, or keep them as they are.
+ */
+fun trackActions(vm: AuditViewModel, tracks: List<Track>, mask: Int, after: () -> Unit = {}): List<Action> {
+    val open = tracks.filter { it.open and mask != 0 }
+    val kept = tracks.filter { it.issues and it.accepted and mask != 0 }
+    val shrinkable = tracks.filter { Shrink.target(it) != null }
+    val out = ArrayList<Action>()
+    if (shrinkable.isNotEmpty()) {
+        val to = shrinkable.mapNotNull { Shrink.target(it)?.toString() }.distinct().joinToString(" or ")
+        out += Action(
+            "Shrink ${shrinkable.size} to true size",
+            "Each is written again as FLAC $to, the resolution it really has, and checked sample by sample " +
+                "before it takes the old one's place. The originals wait in quarantine until you empty it.",
+            Grid.Yellow,
+        ) {
+            vm.shrink(shrinkable)
+            after()
+        }
+    }
+    if (open.isNotEmpty()) {
+        out += Action(
+            "Set aside ${open.size} · ${Doctor.mb(open.sumOf { it.size })}",
+            "Moved to the quarantine folder on the same card. Put back any time until you empty it.",
+            Grid.Red,
+        ) {
+            vm.setAside(open)
+            after()
+        }
+        out += Action(
+            if (open.size == 1) "Keep as it is" else "Keep as they are",
+            "Off this list. What was found stays on each track's page.",
+            Grid.Paper,
+        ) { vm.keep(open, mask) }
+    }
+    if (kept.isNotEmpty()) {
+        out += Action("Back on the list · ${kept.size}", "You kept ${if (kept.size == 1) "this" else "these"} as found; list again.", Grid.Paper) {
+            vm.keep(kept, mask, keep = false)
+        }
+    }
+    return out
 }
 
 /** One album: what it claims, its DR, and every track with what was found in it. */
@@ -99,7 +186,15 @@ fun AlbumScreen(vm: AuditViewModel, folder: String, push: (Route) -> Unit, pop: 
         return
     }
     val findings = lib.findings.filter { it.album.folder == folder }
-    Page(title = album.title, subtitle = album.artist, onBack = pop) {
+    val fixable = findings.map { it.problem }.filter { it in Fixes.FIXABLE }
+    val flagged = album.tracks.filter { it.issues != 0 }
+    var sheet by rememberSaveable { mutableStateOf(false) }
+    Page(
+        title = album.title,
+        subtitle = album.artist,
+        onBack = pop,
+        bottom = { BrutalButton("What to do", onClick = { sheet = true }) },
+    ) {
         LazyColumn(contentPadding = PaddingValues(bottom = GridTokens.GapWide)) {
             item {
                 Column(Modifier.padding(horizontal = GridTokens.Page, vertical = GridTokens.GapWide)) {
@@ -115,6 +210,17 @@ fun AlbumScreen(vm: AuditViewModel, folder: String, push: (Route) -> Unit, pop: 
                             Text(f.detail, style = MaterialTheme.typography.bodySmall, color = Grid.InkSoft)
                         }
                     }
+                    if (fixable.isNotEmpty()) {
+                        Caption(
+                            "Fix tags & covers →",
+                            color = Grid.Blue,
+                            modifier = Modifier
+                                .clickable(remember { MutableInteractionSource() }, indication = null) {
+                                    push(Route.Fix(listOf(folder), fixable.toSet()))
+                                }
+                                .padding(vertical = GridTokens.Gap),
+                        )
+                    }
                     Spacer(Modifier.height(GridTokens.Gap))
                     Text(folder, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = Grid.InkSoft)
                 }
@@ -124,7 +230,38 @@ fun AlbumScreen(vm: AuditViewModel, folder: String, push: (Route) -> Unit, pop: 
             items(album.tracks, key = { it.id }) { t -> TrackRow(t) { push(Route.Track(t.id)) } }
         }
     }
+
+    if (sheet) {
+        val actions = trackActions(vm, flagged, ALL)
+        val whole = Action(
+            "Set aside album",
+            "All ${Doctor.count(album.tracks.size, "track")}, ${Doctor.mb(album.size)}, with the folder's cover and anything else in it, " +
+                "moved to the quarantine. Put back any time until you empty it.",
+            Grid.Red,
+        ) {
+            vm.setAside(album.tracks)
+            pop()
+        }
+        // When every track is flagged, setting aside the flagged ones is setting aside the album.
+        val list = if (flagged.size == album.tracks.size) actions.filterNot { it.label.startsWith("Set aside") } + whole
+        else actions + whole
+        Actions(
+            title = album.title,
+            text = when {
+                flagged.isEmpty() -> null
+                flagged.size == album.tracks.size -> "Every track has findings."
+                else -> "${flagged.size} of ${album.tracks.size} tracks have findings."
+            },
+            actions = list,
+            onDismiss = { sheet = false },
+        )
+    }
 }
+
+private val ALL = Issue.mask(Issue.entries)
+
+/** The filter key for findings the person kept. */
+private const val KEPT = -1
 
 @Composable
 private fun TrackRow(t: Track, onClick: () -> Unit) {
@@ -169,7 +306,13 @@ fun TrackScreen(vm: AuditViewModel, id: Long, pop: () -> Unit) {
     val spectrum by produceState<ByteArray?>(null, id, t.deepVersion) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { vm.spectrum(id) }
     }
-    Page(title = t.title ?: t.name, subtitle = listOfNotNull(t.artist, t.album).joinToString(" · "), onBack = pop) {
+    var sheet by rememberSaveable { mutableStateOf(false) }
+    Page(
+        title = t.title ?: t.name,
+        subtitle = listOfNotNull(t.artist, t.album).joinToString(" · "),
+        onBack = pop,
+        bottom = { BrutalButton("What to do", onClick = { sheet = true }) },
+    ) {
         Column(
             Modifier
                 .verticalScroll(rememberScrollState())
@@ -185,6 +328,10 @@ fun TrackScreen(vm: AuditViewModel, id: Long, pop: () -> Unit) {
                 Spacer(Modifier.height(GridTokens.Gap))
             }
             Text(Look.explain(t), style = MaterialTheme.typography.bodyLarge, color = Grid.Ink)
+            if (t.issues and t.accepted != 0) {
+                Spacer(Modifier.height(GridTokens.Gap))
+                Caption("You chose to keep it as it is", color = Grid.Ink)
+            }
             Spacer(Modifier.height(GridTokens.GapWide))
             spectrum?.let {
                 Caption("Average spectrum")
@@ -222,6 +369,18 @@ fun TrackScreen(vm: AuditViewModel, id: Long, pop: () -> Unit) {
             Spacer(Modifier.height(GridTokens.GapWide))
             Text(t.path, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = Grid.InkSoft)
         }
+    }
+
+    if (sheet) {
+        val actions = trackActions(vm, listOf(t), t.issues, after = pop).ifEmpty {
+            listOf(
+                Action("Set aside · ${Doctor.mb(t.size)}", "Moved to the quarantine folder. Put back any time until you empty it.", Grid.Red) {
+                    vm.setAside(listOf(t))
+                    pop()
+                },
+            )
+        }
+        Actions(title = t.title ?: t.name, text = null, actions = actions, onDismiss = { sheet = false })
     }
 }
 

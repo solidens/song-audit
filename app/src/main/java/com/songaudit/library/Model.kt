@@ -50,11 +50,17 @@ data class Track(
     val cliffDb: Float = 0f,
     val ultrasonicDb: Float = 0f,
     val issues: Int = 0,
+    /** Findings the person has chosen to live with: off the lists, still on the track's page. */
+    val accepted: Int = 0,
 ) {
     val name: String get() = path.substringAfterLast('/')
     val analysed: Boolean get() = deepVersion > 0
     val issueList: List<Issue> get() = Issue.of(issues)
     fun has(issue: Issue) = issues and issue.bit != 0
+
+    /** Findings still waiting for a decision. */
+    val open: Int get() = issues and accepted.inv()
+    fun flags(issue: Issue) = open and issue.bit != 0
 
     /** "FLAC 24/96", "MP3 320", "DSF 2.8 MHz": what the file claims, in the shortest form. */
     val quality: String get() = when {
@@ -91,7 +97,8 @@ class Album(val folder: String, val tracks: List<Track>) {
     /** Album DR the way the meter reports it: the mean of its tracks, rounded. */
     val dr: Float = tracks.map { it.dr }.filter { !it.isNaN() }.let { if (it.isEmpty()) Float.NaN else it.average().toFloat() }
 
-    fun count(issue: Issue) = tracks.count { it.has(issue) }
+    /** Tracks with [issue] still open: what the lists count. */
+    fun count(issue: Issue) = tracks.count { it.flags(issue) }
 
     companion object {
         fun of(tracks: Collection<Track>): List<Album> =

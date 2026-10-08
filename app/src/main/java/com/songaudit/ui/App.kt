@@ -24,6 +24,7 @@ import com.songaudit.ui.screens.AlbumScreen
 import com.songaudit.ui.screens.AlbumsScreen
 import com.songaudit.ui.screens.DoctorScreen
 import com.songaudit.ui.screens.DuplicatesScreen
+import com.songaudit.ui.screens.FixScreen
 import com.songaudit.ui.screens.GroupScreen
 import com.songaudit.ui.screens.HomeScreen
 import com.songaudit.ui.screens.QuarantineScreen
@@ -41,6 +42,8 @@ sealed interface Route {
     data class Album(val folder: String) : Route
     data class Track(val id: Long) : Route
     data object Quarantine : Route
+    /** Tag and cover fixes for these albums' findings, shown before they are written. */
+    data class Fix(val folders: List<String>, val problems: Set<com.songaudit.library.Problem>) : Route
 }
 
 /**
@@ -89,6 +92,7 @@ fun AuditApp(vm: AuditViewModel) {
                     is Route.Album -> AlbumScreen(vm, route.folder, push, pop)
                     is Route.Track -> TrackScreen(vm, route.id, pop)
                     Route.Quarantine -> QuarantineScreen(vm, pop)
+                    is Route.Fix -> FixScreen(vm, route.folders, route.problems, pop)
                 }
             }
         }

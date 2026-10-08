@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -327,6 +328,38 @@ fun Confirm(
             BrutalButton(action, onClick = { onConfirm(); onDismiss() }, fill = fill, contentColor = onAccent(fill), height = 52.dp)
             Spacer(Modifier.height(GridTokens.Gap))
             BrutalButton("Cancel", onClick = onDismiss, height = 52.dp)
+        }
+    }
+}
+
+/** One thing that can be done, with a line on what it means. */
+class Action(val label: String, val detail: String, val fill: Color, val run: () -> Unit)
+
+/** A choice between a few things to do, each with its consequence spelled out under it. */
+@Composable
+fun Actions(title: String, text: String?, actions: List<Action>, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        BrutalCard(Modifier.padding(GridTokens.Gap)) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(title.uppercase(), style = MaterialTheme.typography.titleLarge, color = Grid.Ink)
+                if (text != null) {
+                    Spacer(Modifier.height(GridTokens.Gap))
+                    Text(text, style = MaterialTheme.typography.bodyLarge, color = Grid.InkSoft)
+                }
+                for (a in actions) {
+                    Spacer(Modifier.height(GridTokens.GapWide))
+                    BrutalButton(
+                        a.label,
+                        onClick = { a.run(); onDismiss() },
+                        fill = a.fill,
+                        contentColor = if (a.fill == Grid.Paper) Grid.Ink else onAccent(a.fill),
+                        height = 52.dp,
+                    )
+                    Text(a.detail, style = MaterialTheme.typography.bodySmall, color = Grid.InkSoft)
+                }
+                Spacer(Modifier.height(GridTokens.GapWide))
+                BrutalButton("Cancel", onClick = onDismiss, height = 52.dp)
+            }
         }
     }
 }

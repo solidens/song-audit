@@ -27,7 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.songaudit.fix.Fixes
 import com.songaudit.library.Copy
+import com.songaudit.library.Db
 import com.songaudit.library.Doctor
 import com.songaudit.library.DupGroup
 import com.songaudit.library.Problem
@@ -249,14 +251,41 @@ fun DoctorScreen(vm: AuditViewModel, push: (Route) -> Unit, pop: () -> Unit) {
     var filter by rememberSaveable { mutableStateOf<Problem?>(null) }
     val counts = Problem.entries.associateWith { p -> lib.findings.count { it.problem == p } }
     val shown = lib.findings.filter { filter == null || it.problem == filter }
+    val fixable = shown.filter { it.problem in Fixes.FIXABLE }
+    val folders = fixable.map { it.album.folder }.distinct()
 
-    Page(title = "Tags & covers", subtitle = "${n(lib.findings.map { it.album.folder }.distinct().size)} albums", onBack = pop) {
+    Page(
+        title = "Tags & covers",
+        subtitle = Doctor.count(lib.findings.map { it.album.folder }.distinct().size, "album"),
+        onBack = pop,
+        bottom = if (folders.isEmpty()) null else {
+            {
+                BrutalButton(
+                    "Fix ${Doctor.count(folders.size, "album")}",
+                    onClick = { push(Route.Fix(folders, fixable.map { it.problem }.toSet())) },
+                    fill = Grid.Yellow,
+                )
+            }
+        },
+    ) {
         Chips(
             listOf<Pair<Problem?, String>>(null to "All") + Problem.entries.filter { counts.getValue(it) > 0 }.map { it to "${it.title} ${counts.getValue(it)}" },
             filter,
         ) { filter = it }
         if (shown.isEmpty()) {
             Empty("All tidy", "Every album has art, consistent tags and all its tracks.")
+        } else if (filter == Problem.INCOMPLETE) {
+            LazyColumn(contentPadding = PaddingValues(vertical = GridTokens.Gap)) {
+                item {
+                    Caption(
+                        "Tracks that are not on the player cannot be fixed from here",
+                        modifier = Modifier.padding(horizontal = GridTokens.Page, vertical = GridTokens.Gap),
+                    )
+                }
+                items(shown, key = { it.album.folder + it.problem }) { f ->
+                    AlbumRow(f.album, listOf(f.problem.title to Grid.Paper), f.detail) { push(Route.Album(f.album.folder)) }
+                }
+            }
         } else {
             LazyColumn(contentPadding = PaddingValues(vertical = GridTokens.Gap)) {
                 items(shown, key = { it.album.folder + it.problem }) { f ->
@@ -274,6 +303,8 @@ fun QuarantineScreen(vm: AuditViewModel, pop: () -> Unit) {
     val lib = vm.library.collectAsStateWithLifecycle().value ?: Library.EMPTY
     var confirm by rememberSaveable { mutableStateOf(false) }
     val entries = lib.quarantine
+    // One card per thing done: a set of duplicates, an album fixed, a batch shrunk.
+    val batches = entries.groupBy { it.batch }.values.toList()
     Page(
         title = "Quarantine",
         subtitle = "${n(entries.size)} items · ${Doctor.mb(lib.quarantineSize)}",
@@ -289,37 +320,60 @@ fun QuarantineScreen(vm: AuditViewModel, pop: () -> Unit) {
         LazyColumn(contentPadding = PaddingValues(vertical = GridTokens.Gap)) {
             item {
                 Text(
-                    "Set aside, not deleted. Put back what you want to keep; empty the rest to free the space.",
+                    "Set aside, not deleted, and every fix as it was before. Put back what you want; empty the rest to free the space.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = Grid.InkSoft,
                     modifier = Modifier.padding(horizontal = GridTokens.Page, vertical = GridTokens.Gap),
                 )
             }
-            items(entries, key = { it.id }) { e ->
-                TapSlab(null, Modifier.fillMaxWidth().padding(horizontal = GridTokens.Page, vertical = 4.dp)) {
-                    Text(e.label ?: e.original.substringAfterLast('/'), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold), color = Grid.Ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Caption(Doctor.mb(e.size))
-                    Text(e.original, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = Grid.InkSoft, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(GridTokens.Gap))
-                    Caption(
-                        "Put back →",
-                        color = Grid.Blue,
-                        modifier = Modifier
-                            .clickable(remember { MutableInteractionSource() }, indication = null) { vm.restore(listOf(e)) }
-                            .padding(vertical = 6.dp),
-                    )
-                }
-            }
+            items(batches, key = { it.first().batch }) { batch -> BatchCard(batch) { vm.restore(batch) } }
         }
     }
     if (confirm) {
         Confirm(
             title = "Empty the quarantine?",
-            text = "${n(entries.size)} items, ${Doctor.mb(lib.quarantineSize)}, are deleted for good. This cannot be undone.",
+            text = "${n(entries.size)} items, ${Doctor.mb(lib.quarantineSize)}, are deleted for good, and fixes can no longer be undone. " +
+                "This cannot be undone.",
             action = "Delete for good",
             fill = Grid.Red,
             onConfirm = vm::emptyQuarantine,
             onDismiss = { confirm = false },
+        )
+    }
+}
+
+@Composable
+private fun BatchCard(batch: List<Db.Moved>, onRestore: () -> Unit) {
+    val kinds = batch.map { it.kind }.toSet()
+    val kind = when {
+        Db.Moved.REPLACED in kinds -> Db.Moved.REPLACED
+        Db.Moved.TAGS in kinds || Db.Moved.ADDED in kinds -> Db.Moved.TAGS
+        else -> Db.Moved.SET_ASIDE
+    }
+    // Labels are "what · Artist — Album · file" for fixes and "Artist — Album · file" for set-asides.
+    val parts = batch.map { (it.label ?: it.original.substringAfterLast('/')).split(" · ") }
+    val what = when (kind) {
+        Db.Moved.TAGS -> "Tags and covers before a fix"
+        Db.Moved.REPLACED -> "Originals before shrinking"
+        else -> "Set aside"
+    }
+    val albums = parts.map { p -> if (kind == Db.Moved.SET_ASIDE) p.first() else p.getOrElse(1) { p.first() } }.distinct()
+    val title = albums.take(2).joinToString(" · ") + if (albums.size > 2) " and ${albums.size - 2} more" else ""
+    val size = batch.sumOf { it.size }
+    TapSlab(null, Modifier.fillMaxWidth().padding(horizontal = GridTokens.Page, vertical = 4.dp)) {
+        Caption(what, color = if (kind == Db.Moved.SET_ASIDE) Grid.InkSoft else Grid.Blue)
+        Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold), color = Grid.Ink, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Caption(Doctor.count(batch.size, "item") + " · " + Doctor.mb(size))
+        if (batch.size == 1) {
+            Text(batch[0].original, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = Grid.InkSoft, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.height(GridTokens.Gap))
+        Caption(
+            if (kind == Db.Moved.SET_ASIDE) "Put back →" else "Undo the fix →",
+            color = Grid.Blue,
+            modifier = Modifier
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onRestore)
+                .padding(vertical = 6.dp),
         )
     }
 }

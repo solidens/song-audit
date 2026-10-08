@@ -124,9 +124,9 @@ fun AlbumRow(album: Album, badges: List<Pair<String, Color>>, detail: String? = 
     }
 }
 
-fun badgesFor(album: Album, issues: List<Issue>): List<Pair<String, Color>> =
+fun badgesFor(album: Album, issues: List<Issue>, kept: Boolean = false): List<Pair<String, Color>> =
     issues.mapNotNull { i ->
-        val n = album.count(i)
+        val n = if (kept) album.tracks.count { it.has(i) && it.accepted and i.bit != 0 } else album.count(i)
         if (n == 0) null else (if (n == album.tracks.size) Look.label(i) else "${Look.label(i)} $n") to Look.fill(i)
     }
 

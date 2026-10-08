@@ -15,6 +15,8 @@ import android.os.IBinder
 import android.os.PowerManager
 import com.songaudit.MainActivity
 import com.songaudit.R
+import com.songaudit.fix.Fixer
+import com.songaudit.fix.Jobs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +45,13 @@ class ScanService : Service() {
             job?.cancel() ?: stopSelf()
             return START_NOT_STICKY
         }
+        // One thing at a time: a fix asked for during a scan waits for the next start.
         if (job?.isActive == true) return START_NOT_STICKY
+        val fix = if (intent?.action == ACTION_FIX) Jobs.take() else null
+        if (intent?.action == ACTION_FIX && fix == null) {
+            if (job == null) stopSelf()
+            return START_NOT_STICKY
+        }
 
         channel()
         val first = notification(ScanState.progress.value)
@@ -56,7 +64,9 @@ class ScanService : Service() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "songaudit:scan")
             .apply { acquire(12 * 60 * 60 * 1000L) }
 
-        val scan = scope.launch { Scanner(applicationContext, ::charging).run() }
+        val scan = scope.launch {
+            if (fix != null) Fixer(applicationContext).run(fix) else Scanner(applicationContext, ::charging).run()
+        }
         val updates = scope.launch {
             ScanState.progress.collect {
                 getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(it))
@@ -134,9 +144,15 @@ class ScanService : Service() {
         private const val CHANNEL = "scan"
         private const val NOTIFICATION = 1
         private const val ACTION_STOP = "stop"
+        private const val ACTION_FIX = "fix"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, ScanService::class.java))
+        }
+
+        /** Runs the job posted to [Jobs] with the screen off, like a scan. */
+        fun fix(context: Context) {
+            context.startForegroundService(Intent(context, ScanService::class.java).setAction(ACTION_FIX))
         }
 
         fun stop(context: Context) {
